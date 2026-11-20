@@ -41,7 +41,40 @@ const upload = multer({
 // Helper to generate a unique random ID for mock mode
 const generateId = () => Math.random().toString(36).substring(2, 9);
 
-// 1. GET ALL COMPLAINTS (with filtering)
+// ─────────────────────────────────────────────────────────────────────────────
+// IMPORTANT: /stats MUST be declared BEFORE /:id routes.
+// Express matches routes top-to-bottom, so if /:id comes first,
+// a request to /stats will be treated as id="stats" and fail.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 1. GET SYSTEM STATISTICS  (must be before /:id)
+router.get('/stats', async (req, res) => {
+  const { isMockMode, mockDb } = getDbMode();
+
+  if (isMockMode) {
+    const list = mockDb.complaints;
+    const stats = {
+      total: list.length,
+      registered: list.filter(c => c.status === 'Registered').length,
+      underReview: list.filter(c => c.status === 'Under Review').length,
+      resolved: list.filter(c => c.status === 'Resolved').length
+    };
+    return res.json(stats);
+  } else {
+    try {
+      const total = await Complaint.countDocuments();
+      const registered = await Complaint.countDocuments({ status: 'Registered' });
+      const underReview = await Complaint.countDocuments({ status: 'Under Review' });
+      const resolved = await Complaint.countDocuments({ status: 'Resolved' });
+
+      res.json({ total, registered, underReview, resolved });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  }
+});
+
+// 2. GET ALL COMPLAINTS (with filtering)
 router.get('/', async (req, res) => {
   const { district, mahanagarpalika, category, status, search } = req.query;
   const { isMockMode, mockDb } = getDbMode();
@@ -49,35 +82,20 @@ router.get('/', async (req, res) => {
   if (isMockMode) {
     let list = [...mockDb.complaints];
 
-    // Filter by district
-    if (district) {
-      list = list.filter(c => c.district === district);
-    }
-    // Filter by corporation
-    if (mahanagarpalika) {
-      list = list.filter(c => c.mahanagarpalika === mahanagarpalika);
-    }
-    // Filter by category
-    if (category) {
-      list = list.filter(c => c.category === category);
-    }
-    // Filter by status
-    if (status) {
-      list = list.filter(c => c.status === status);
-    }
-    // Filter by search query (title / description / address)
+    if (district) list = list.filter(c => c.district === district);
+    if (mahanagarpalika) list = list.filter(c => c.mahanagarpalika === mahanagarpalika);
+    if (category) list = list.filter(c => c.category === category);
+    if (status) list = list.filter(c => c.status === status);
     if (search) {
       const q = search.toLowerCase();
-      list = list.filter(c => 
-        c.title.toLowerCase().includes(q) || 
+      list = list.filter(c =>
+        c.title.toLowerCase().includes(q) ||
         c.description.toLowerCase().includes(q) ||
         c.address.toLowerCase().includes(q)
       );
     }
 
-    // Sort by newest first
     list.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-
     return res.json(list);
   } else {
     try {
@@ -102,12 +120,14 @@ router.get('/', async (req, res) => {
   }
 });
 
-// 2. SUBMIT A COMPLAINT
+// 3. SUBMIT A COMPLAINT
 router.post('/', upload.array('images', 5), async (req, res) => {
   try {
-    const { title, category, description, district, mahanagarpalika, address, citizenName, citizenPhone } = req.body;
-    
-    // Process uploaded image file names
+    const {
+      title, category, description, district,
+      mahanagarpalika, address, citizenName, citizenPhone
+    } = req.body;
+
     const imageUrls = req.files ? req.files.map(file => `/uploads/${file.filename}`) : [];
 
     const { isMockMode, mockDb } = getDbMode();
@@ -115,34 +135,23 @@ router.post('/', upload.array('images', 5), async (req, res) => {
     if (isMockMode) {
       const newComplaint = {
         _id: generateId(),
-        title,
-        category,
-        description,
-        district,
-        mahanagarpalika,
-        address,
+        title, category, description, district,
+        mahanagarpalika, address,
         images: imageUrls,
-        citizenName,
-        citizenPhone,
+        citizenName, citizenPhone,
         status: 'Registered',
         officerRemarks: '',
         upvotes: 0,
         createdAt: new Date().toISOString()
       };
-      
       mockDb.complaints.push(newComplaint);
       return res.status(201).json(newComplaint);
     } else {
       const newComplaint = new Complaint({
-        title,
-        category,
-        description,
-        district,
-        mahanagarpalika,
-        address,
+        title, category, description, district,
+        mahanagarpalika, address,
         images: imageUrls,
-        citizenName,
-        citizenPhone
+        citizenName, citizenPhone
       });
 
       const saved = await newComplaint.save();
@@ -153,7 +162,7 @@ router.post('/', upload.array('images', 5), async (req, res) => {
   }
 });
 
-// 3. UPVOTE A COMPLAINT
+// 4. UPVOTE A COMPLAINT
 router.post('/:id/upvote', async (req, res) => {
   const { id } = req.params;
   const { isMockMode, mockDb } = getDbMode();
@@ -161,14 +170,14 @@ router.post('/:id/upvote', async (req, res) => {
   if (isMockMode) {
     const complaint = mockDb.complaints.find(c => c._id === id);
     if (!complaint) return res.status(404).json({ message: 'Complaint not found' });
-    
+
     complaint.upvotes = (complaint.upvotes || 0) + 1;
     return res.json(complaint);
   } else {
     try {
       const complaint = await Complaint.findById(id);
       if (!complaint) return res.status(404).json({ message: 'Complaint not found' });
-      
+
       complaint.upvotes += 1;
       await complaint.save();
       res.json(complaint);
@@ -178,7 +187,7 @@ router.post('/:id/upvote', async (req, res) => {
   }
 });
 
-// 4. UPDATE COMPLAINT STATUS (OFFICER PORTAL)
+// 5. UPDATE COMPLAINT STATUS (OFFICER PORTAL)
 router.put('/:id/status', async (req, res) => {
   const { id } = req.params;
   const { status, officerRemarks } = req.body;
@@ -194,7 +203,6 @@ router.put('/:id/status', async (req, res) => {
 
     complaint.status = status;
     complaint.officerRemarks = officerRemarks || '';
-    
     return res.json(complaint);
   } else {
     try {
@@ -203,36 +211,8 @@ router.put('/:id/status', async (req, res) => {
 
       complaint.status = status;
       complaint.officerRemarks = officerRemarks || '';
-      
       await complaint.save();
       res.json(complaint);
-    } catch (err) {
-      res.status(500).json({ message: err.message });
-    }
-  }
-});
-
-// 5. GET SYSTEM STATISTICS
-router.get('/stats', async (req, res) => {
-  const { isMockMode, mockDb } = getDbMode();
-
-  if (isMockMode) {
-    const list = mockDb.complaints;
-    const stats = {
-      total: list.length,
-      registered: list.filter(c => c.status === 'Registered').length,
-      underReview: list.filter(c => c.status === 'Under Review').length,
-      resolved: list.filter(c => c.status === 'Resolved').length
-    };
-    return res.json(stats);
-  } else {
-    try {
-      const total = await Complaint.countDocuments();
-      const registered = await Complaint.countDocuments({ status: 'Registered' });
-      const underReview = await Complaint.countDocuments({ status: 'Under Review' });
-      const resolved = await Complaint.countDocuments({ status: 'Resolved' });
-
-      res.json({ total, registered, underReview, resolved });
     } catch (err) {
       res.status(500).json({ message: err.message });
     }
